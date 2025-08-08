@@ -1,70 +1,106 @@
-import { Container, getContainer, getRandom } from "@cloudflare/containers";
-import { Hono } from "hono";
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { Container, getContainer } from "@cloudflare/containers";
+
+type Params = {
+    message?: string;
+};
+
+export class HelloWorldWorkflow extends WorkflowEntrypoint<Env, Params> {
+    async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
+        // Call container.fetch to POST to /hello endpoint
+        const result = await step.do('call-hello-endpoint', async () => {
+            const message = event.payload?.message || 'Hello from Cloudflare Workflows!';
+            const container = getContainer(this.env.MY_CONTAINER, `workflow-${Date.now()}`);
+
+            const response = await container.fetch('/hello', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message })
+            });
+
+            const responseData = await response.text();
+
+            return {
+                response: responseData,
+                status: response.status,
+                executedAt: new Date().toISOString()
+            };
+        });
+
+        return {
+            result,
+            timestamp: Date.now(),
+            status: 'completed',
+            message: event.payload?.message || 'Hello from Cloudflare Workflows!'
+        };
+    }
+}
 
 export class MyContainer extends Container<Env> {
-  // Port the container listens on (default: 8080)
   defaultPort = 8080;
-  // Time before container sleeps due to inactivity (default: 30s)
-  sleepAfter = "2m";
-  // Environment variables passed to the container
+  sleepAfter = "1h";
   envVars = {
-    MESSAGE: "I was passed in via the container class!",
+    MESSAGE: "default top level - can be overriden on specific instances",
   };
 
-  // Optional lifecycle hooks
   override onStart() {
-    console.log("Container successfully started");
-  }
-
-  override onStop() {
-    console.log("Container successfully shut down");
-  }
-
-  override onError(error: unknown) {
-    console.log("Container error:", error);
+    console.log("Container was booted");
   }
 }
 
-// Create Hono app with proper typing for Cloudflare Workers
-const app = new Hono<{
-  Bindings: Env;
-}>();
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
 
-// Home route with available endpoints
-app.get("/", (c) => {
-  return c.text(
-    "Available endpoints:\n" +
-      "GET /container/<ID> - Start a container for each ID with a 2m timeout\n" +
-      "GET /lb - Load balance requests over multiple containers\n" +
-      "GET /error - Start a container that errors (demonstrates error handling)\n" +
-      "GET /singleton - Get a single specific container instance",
-  );
-});
+    // Default response
+    if (url.pathname === "/" && request.method === "GET") {
+      return new Response(JSON.stringify({
+        message: '🎉 CLOUDFLARE WORKFLOWS + CONTAINERS (step.container API)',
+        description: 'Hello World container workflow demo using step.container',
+        usage: {
+          method: 'POST',
+          path: '/run',
+          body: '{ "message": "Your custom message" }'
+        },
+        note: 'This workflow runs a distroless container as a step'
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
 
-// Route requests to a specific container using the container ID
-app.get("/container/:id", async (c) => {
-  const id = c.req.param("id");
-  const containerId = c.env.MY_CONTAINER.idFromName(`/container/${id}`);
-  const container = c.env.MY_CONTAINER.get(containerId);
-  return await container.fetch(c.req.raw);
-});
 
-// Demonstrate error handling - this route forces a panic in the container
-app.get("/error", async (c) => {
-  const container = getContainer(c.env.MY_CONTAINER, "error-test");
-  return await container.fetch(c.req.raw);
-});
+    // Start a new workflow
+		if (request.method === 'POST' && url.pathname === '/run') {
+			const body = await request.json() as { message?: string };
+			const workflowId = crypto.randomUUID();
 
-// Load balance requests across multiple containers
-app.get("/lb", async (c) => {
-  const container = await getRandom(c.env.MY_CONTAINER, 3);
-  return await container.fetch(c.req.raw);
-});
+			try {
+				await env.HELLO_WORKFLOW.create({
+					id: workflowId,
+					params: { message: body.message }
+				});
 
-// Get a single container instance (singleton pattern)
-app.get("/singleton", async (c) => {
-  const container = getContainer(c.env.MY_CONTAINER);
-  return await container.fetch(c.req.raw);
-});
+				return new Response(JSON.stringify({
+					message: 'Hello World container workflow started with step.container API!',
+					workflowId,
+					status: 'running',
+					api: 'step.container'
+				}), {
+					headers: { 'Content-Type': 'application/json' }
+				});
+			} catch (err) {
+				return new Response(JSON.stringify({
+					error: err instanceof Error ? err.message : JSON.stringify(err)
+				}), {
+					status: 500,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+		}
 
-export default app;
+
+    return new Response("Not Found", { status: 404 });
+  },
+};

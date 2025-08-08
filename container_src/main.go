@@ -14,13 +14,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Hi, I'm a container and this is my message: \"%s\", my instance ID is: %s", message, instanceId)
 }
 
-func errorHandler(w http.ResponseWriter, r *http.Request) {
-	panic("This is a panic")
-}
-
 func main() {
 	http.HandleFunc("/", handler)
-	http.HandleFunc("/container", handler)
-	http.HandleFunc("/error", errorHandler)
+	http.HandleFunc("/hello", handler)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
